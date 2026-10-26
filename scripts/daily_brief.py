@@ -40,7 +40,9 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.header import Header
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formatdate
 
 CST = timezone(timedelta(hours=8))
 UA = "daily-brief/1.0 (+https://github.com)"
@@ -415,20 +417,79 @@ def push_feishu(title: str, content: str, webhook: str, secret: str = "") -> Non
     log("  飞书推送成功")
 
 
+def render_html(content: str, title: str) -> str:
+    """把纯文本简报转成手机上排版好看的 HTML（只用内联样式，兼容 QQ/Gmail/Outlook）。"""
+    parts = []
+    for raw in content.splitlines():
+        line = raw.rstrip()
+        if not line or set(line) <= set("=- "):
+            continue
+        esc = html.escape(line)
+        if line.startswith("【") and line.endswith("】"):
+            parts.append(
+                f'<h3 style="margin:22px 0 10px;font-size:16px;'
+                f'color:#111;border-bottom:2px solid #f0f0f0;padding-bottom:6px;">{esc}</h3>'
+            )
+        elif line.startswith("·") or line.startswith("- "):
+            parts.append(
+                f'<div style="margin:8px 0;padding-left:12px;border-left:3px solid #e5e7eb;'
+                f'line-height:1.75;">{html.escape(line.lstrip("·- ").strip())}</div>'
+            )
+        else:
+            parts.append(f'<p style="margin:6px 0;line-height:1.75;">{esc}</p>')
+    body = "\n".join(parts)
+    return (
+        '<div style="max-width:640px;margin:0 auto;padding:12px 18px;'
+        "font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;"
+        'font-size:15px;color:#222;">'
+        f"{body}"
+        '<p style="margin-top:26px;padding-top:12px;border-top:1px solid #eee;'
+        'font-size:12px;color:#999;">由 DSH 每日简报自动生成 · 天气数据 Open-Meteo · '
+        "新闻源见仓库 README</p></div>"
+    )
+
+
 def push_email(title: str, content: str) -> None:
-    host = os.environ["SMTP_HOST"]
-    port = int(os.environ.get("SMTP_PORT", "465"))
-    user = os.environ["SMTP_USER"]
-    pwd = os.environ["SMTP_PASS"]
-    to = os.environ.get("MAIL_TO", user)
-    msg = MIMEText(content, "plain", "utf-8")
+    """SMTP 发信：465 走 SSL，587 走 STARTTLS；同时发纯文本和 HTML 两个版本。"""
+    host = (os.environ.get("SMTP_HOST", "").strip() or "smtp.qq.com")
+    port = int(os.environ.get("SMTP_PORT", "").strip() or "465")
+    user = os.environ.get("SMTP_USER", "").strip()
+    pwd = os.environ.get("SMTP_PASS", "").strip().replace(" ", "")
+    to = os.environ.get("MAIL_TO", "").strip() or user
+    if not user or not pwd:
+        raise RuntimeError("缺 SMTP_USER 或 SMTP_PASS（QQ 邮箱要用 16 位授权码，不是登录密码）")
+    rcpts = [x.strip() for x in re.split(r"[,;，；]", to) if x.strip()]
+    if not rcpts:
+        raise RuntimeError("MAIL_TO 为空，没有收件人")
+
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = Header(title, "utf-8")
     msg["From"] = user
-    msg["To"] = to
-    with smtplib.SMTP_SSL(host, port, timeout=30) as s:
-        s.login(user, pwd)
-        s.sendmail(user, [x.strip() for x in to.split(",")], msg.as_string())
-    log("  邮件推送成功")
+    msg["To"] = ", ".join(rcpts)
+    msg["Date"] = formatdate(localtime=True)
+    msg.attach(MIMEText(content, "plain", "utf-8"))
+    msg.attach(MIMEText(render_html(content, title), "html", "utf-8"))
+
+    try:
+        if port == 465:
+            server = smtplib.SMTP_SSL(host, port, timeout=30)
+        else:
+            server = smtplib.SMTP(host, port, timeout=30)
+        with server:
+            if port != 465:
+                server.starttls()
+            try:
+                server.login(user, pwd)
+            except smtplib.SMTPAuthenticationError as e:
+                raise RuntimeError(
+                    f"SMTP 登录被拒（535）：SMTP_PASS 多半填成了登录密码，要用邮箱设置里生成的授权码。{e}"
+                ) from None
+            server.sendmail(user, rcpts, msg.as_string())
+    except smtplib.SMTPAuthenticationError:
+        raise
+    except OSError as e:
+        raise RuntimeError(f"连不上 {host}:{port}：{e}") from None
+    log(f"  邮件已发出 → {', '.join(rcpts)}")
 
 
 def push(channel: str, title: str, content: str) -> bool:
