@@ -48,7 +48,7 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
-          NEWS_LIMIT: "24"
+          NEWS_LIMIT: "40"
           LOOKBACK_HOURS: "30"
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then

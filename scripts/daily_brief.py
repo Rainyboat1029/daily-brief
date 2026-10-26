@@ -301,6 +301,36 @@ def parse_feed(xml_bytes: bytes, source: str, lookback_hours: int) -> list:
     return out
 
 
+NAV_NOISE = ("国务院部门网站", "地方政府网站", "驻港澳机构网站", "中国政府网微博", "网站地图",
+              "关于我们", "联系我们", "版权声明", "京ICP备")
+
+
+def parse_html_list(raw: bytes, source: str, base: str, pattern: str) -> list:
+    """从新闻站首页/列表页的 <a> 里抠标题，用于那些已经停掉 RSS 的官方站。"""
+    text = raw.decode("utf-8", "replace")
+    out, seen = [], set()
+    for href, inner in re.findall(r'<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', text, re.S):
+        if pattern and pattern not in href:
+            continue
+        if not re.search(r"content_\d+\.htm", href):
+            continue
+        title = strip_html(inner, 120)
+        if len(title) < 8 or any(w in title for w in NAV_NOISE):
+            continue
+        key = title[:24]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "source": source,
+            "title": title,
+            "link": urllib.parse.urljoin(base, href),
+            "summary": "",
+            "published": "",
+        })
+    return out
+
+
 def fetch_news(feeds: list, lookback_hours: int, limit: int) -> list:
     collected = []
     for f in feeds:
@@ -308,9 +338,24 @@ def fetch_news(feeds: list, lookback_hours: int, limit: int) -> list:
         url = f.get("url")
         if not url:
             continue
+        topic = f.get("topic", "")
         try:
-            items = parse_feed(http_get(url), name, lookback_hours)
-            log(f"  {name}: {len(items)} 条")
+            raw = http_get(url)
+            if f.get("type") == "html_list":
+                items = parse_html_list(raw, name, f.get("base", url), f.get("pattern", ""))
+            else:
+                items = parse_feed(raw, name, lookback_hours)
+            for it in items:
+                it["topic"] = topic
+                it["weight"] = f.get("weight", 1)
+            only = [k.lower() for k in f.get("only") or []]
+            if only:
+                before = len(items)
+                items = [i for i in items
+                         if any(k in (i["title"] + i.get("summary", "")).lower() for k in only)]
+                log(f"  {name}: {len(items)} 条（限定 {f.get('only_label', '关键词')} 筛选，原 {before} 条）")
+            else:
+                log(f"  {name}: {len(items)} 条")
             collected.extend(items[: f.get("max", 8)])
         except Exception as e:
             log(f"  抓取失败 {name}: {e}")
@@ -351,41 +396,72 @@ def call_deepseek(prompt: str, system: str, api_key: str, model: str) -> str:
 def build_prompt(weather_block: str, news_items: list, today: str) -> str:
     news_block = "\n".join(
         f"{i + 1}. [{n['source']}] {n['title']}"
-        + (f" —— {n['summary']}" if n["summary"] else "")
+        + (f"：{n['summary'][:110]}" if n.get("summary") else "")
         for i, n in enumerate(news_items)
     )
     return f"""今天是 {today}。
 
-【天气数据】（可能包含多个城市）
+【天气数据】
 {weather_block}
 
-【过去 24 小时新闻（原始标题+摘要，未整理，含大量噪音）】
+【候选新闻（原始标题+摘要，未整理，含大量噪音）】
 {news_block}
 
-请写一份中文每日简报，取舍标准参照《人民日报》"新闻早班车"：优先国家政策、经济数据、科技突破、国际局势、教育医疗住房等公共议题；坚决丢弃社会琐事（个别人员落水/救人/走失/纠纷/交通事故/暖新闻）、明星八卦、体育赛果、地方小事、标题党。
+请按以下要求写一份中文每日简报。
 
-格式严格如下，纯文本，绝对不要 Markdown 符号（不要 #、*、-、>）：
+一、选稿
+- 主体是国内要闻：中央和国务院的政策部署、重要会议、经济数据与产业政策、重大工程与科技突破、教育医疗住房等民生政策、重要立法与反腐动向。
+- 国际部分只保留重大事件：战争与冲突的局势变化、大国政坛重大变故、冲击全球市场或供应链的事件。一般性国外社会新闻、名人动态不要。
+- 科技部分只看两家公司：小米（含 Redmi、澎湃 OS、小米汽车）和苹果（含 iPhone、iPad、Mac、Apple Intelligence）。其他科技公司、泛科技趣闻、评测导购一律不要。
+- 一律丢弃：社会琐事（落水/救人/走失/纠纷/车祸/暖新闻）、明星八卦、体育赛果、地方小事、标题党、营销稿。
+
+二、写法（标准新闻体，官方、客观、克制）
+- 每条格式：序号 + 一句标题（句号结尾），紧接一句概括，讲清发生了什么、涉及谁、关键数字或结论。
+- 全篇不许出现破折号「——」；不许用「据悉」「小编」「我们」这类口吻；不用感叹号、不用网络流行语。
+- 不评价、不煽情、不预测、不加评论性形容词。
+- 只用候选新闻里的事实，不许补充背景、不许编造数字、引语、日期；拿不准的不写。
+- 概括必须是完整句子，不要写「详见原文」「点击查看」这类话。
+
+三、数量
+- 【国内要闻】6-8 条
+- 【国际】2-4 条（确实没有够格的重大事件，就写「今日无重大国际事件」一行）
+- 【科技·小米与苹果】2-4 条（一条都挑不出来就整节省略）
+- 每条不超过 70 字，全篇不超过 900 字。
+
+四、输出格式（纯文本，绝对不要 Markdown 符号，不要 #、*、>、反引号）
 
 【今日天气】
-（每个城市 2 句：温度区间、体感、要不要带伞/加衣；只用上面数据里的数字，不要编造）
+（每个城市 2 句：当前温度与体感、今日温度区间与降水、要不要带伞加衣；只用上面数据，不要编造）
 
-【要闻】
-（4-6 条，每条一行，格式「· 短句事实 —— 一句为什么重要」；按重要性排序，第一条最重要。宁少勿滥：宁可只留 4 条都是硬新闻，也不要为了凑数塞进琐事）
+【国内要闻】
+1. ……
+2. ……
+
+【国际】
+1. ……
+
+【科技·小米与苹果】
+1. ……
 
 【今天一句】
-（一句口语化的提醒，20 字以内）
+（一句克制的提醒，20 字以内，不加感叹号）
 
-总字数 450 字以内，全程中文。"""
+全程中文。"""
 
 
-SYSTEM = ("你是一个靠谱的私人简报编辑，说话简洁、不废话、不编造数据，只基于用户提供的事实写。你在做事实筛选时像党报早班车编辑一样严格：硬新闻优先，社会琐事一律不要。")
+SYSTEM = (
+    "你是通讯社的资深中文编辑，文风接近新华社、人民日报的简讯：客观、准确、克制、信息密度高。"
+    "你只基于给定事实写作，绝不编造数字、人名、日期和引语；宁可少写也不凑数。"
+    "你熟悉中国官方新闻的表达规范，写出来的句子可以直接用于对外发布。"
+)
 
 
 def fallback_digest(weather_block: str, news_items: list, today: str) -> str:
-    lines = [f"【今日天气】", weather_block, "", "【值得知道】"]
-    for n in news_items[:6]:
-        lines.append(f"· {n['title']}" + (f" —— {n['summary'][:60]}" if n["summary"] else ""))
-    lines += ["", "【今天一句】", "（模型调用失败，这是原始摘要）"]
+    lines = ["【今日天气】", weather_block, "", "【国内要闻】"]
+    for i, n in enumerate(news_items[:10], 1):
+        title = n["title"].replace("——", "，").strip()
+        lines.append(f"{i}. {title}")
+    lines += ["", "【今天一句】", "（模型调用失败，以上为原始标题，未经筛选）"]
     return "\n".join(lines)
 
 
