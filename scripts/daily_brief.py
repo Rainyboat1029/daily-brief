@@ -96,8 +96,12 @@ def http_post_json(url: str, payload: dict, timeout: int = 60, headers: dict = N
     if headers:
         hdrs.update(headers)
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:400]
+        raise RuntimeError(f"HTTP {e.code}: {detail}") from None
 
 
 # ---------------------------------------------------------------- weather
@@ -478,7 +482,7 @@ def load_feeds() -> list:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--city", default=os.environ.get("CITY", ""))
-    ap.add_argument("--channel", default=os.environ.get("PUSH_CHANNEL", "none"))
+    ap.add_argument("--channel", default=(os.environ.get("PUSH_CHANNEL", "").strip() or "none"))
     ap.add_argument("--dry-run", action="store_true", help="只打印，不推送")
     ap.add_argument("--lookback-hours", type=int, default=int(os.environ.get("LOOKBACK_HOURS", "30")))
     ap.add_argument("--limit", type=int, default=int(os.environ.get("NEWS_LIMIT", "24")))
@@ -521,11 +525,11 @@ def main() -> int:
 
     # 3. LLM
     api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-    model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+    model = os.environ.get("DEEPSEEK_MODEL", "").strip() or "deepseek-chat"
     body = ""
     if api_key and news_items:
         try:
-            log(f"调用 DeepSeek（{model}）")
+            log(f"调用 DeepSeek（{model or '<空>'}）")
             body = call_deepseek(build_prompt(weather_block or "（无天气数据）", news_items, today), SYSTEM, api_key, model)
             log(f"  生成 {len(body)} 字")
         except Exception as e:
