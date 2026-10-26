@@ -301,6 +301,45 @@ def parse_feed(xml_bytes: bytes, source: str, lookback_hours: int) -> list:
     return out
 
 
+def parse_hypergryph(raw: bytes, source: str, lookback_hours: int = 48) -> list:
+    """鹰角官网 /news 页把公告列表以转义 JSON 内嵌在 HTML 里，按 cid 切块解析。
+
+    产出字段：title / summary(brief) / published(含时区的时间戳)。该页只有《明日方舟》国服公告。
+    """
+    text = raw.decode("utf-8", "replace")
+    out, seen = [], set()
+    for chunk in text.split('{\\"cid\\":\\"')[1:]:
+        m_title = re.search(r'\\"title\\":\\"(.*?)\\",\\"author\\"', chunk, re.S)
+        m_ts = re.search(r'\\"displayTime\\":(\d+)', chunk)
+        if not m_title or not m_ts:
+            continue
+        m_brief = re.search(r'\\"brief\\":\\"(.*?)\\"\\}', chunk, re.S)
+        title = _unescape_js(m_title.group(1))
+        brief = _unescape_js(m_brief.group(1)) if m_brief else ""
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        dt = datetime.fromtimestamp(int(m_ts.group(1)), CST)
+        out.append({
+            "source": source,
+            "title": title,
+            "link": "https://ak.hypergryph.com/news",
+            "summary": brief,
+            "published": dt.strftime("%Y-%m-%d %H:%M"),
+            "_dt": dt,
+        })
+    out.sort(key=lambda x: x["_dt"], reverse=True)
+    if lookback_hours and lookback_hours > 0:
+        cutoff = datetime.now(CST) - timedelta(hours=lookback_hours)
+        out = [x for x in out if x["_dt"] >= cutoff]
+    return out
+
+
+def _unescape_js(t: str) -> str:
+    return (t.replace('\\\\"', '"').replace("\\\\n", " ").replace("\\\\/", "/")
+             .replace("\\\\t", " ").strip())
+
+
 NAV_NOISE = ("国务院部门网站", "地方政府网站", "驻港澳机构网站", "中国政府网微博", "网站地图",
               "关于我们", "联系我们", "版权声明", "京ICP备")
 
@@ -341,13 +380,23 @@ def fetch_news(feeds: list, lookback_hours: int, limit: int) -> list:
         topic = f.get("topic", "")
         try:
             raw = http_get(url)
-            if f.get("type") == "html_list":
+            kind = f.get("type", "rss")
+            if kind == "html_list":
                 items = parse_html_list(raw, name, f.get("base", url), f.get("pattern", ""))
+            elif kind == "hypergryph_news":
+                items = parse_hypergryph(raw, name, int(f.get("lookback_hours", 48)))
             else:
                 items = parse_feed(raw, name, lookback_hours)
             for it in items:
                 it["topic"] = topic
                 it["weight"] = f.get("weight", 1)
+            drop = [k.lower() for k in f.get("exclude") or []]
+            if drop:
+                before = len(items)
+                items = [i for i in items
+                         if not any(k in (i["title"] + i.get("summary", "")).lower() for k in drop)]
+                if before != len(items):
+                    log(f"  {name}: 排除 {before - len(items)} 条（{f.get('exclude_label', '黑名单')}）")
             only = [k.lower() for k in f.get("only") or []]
             if only:
                 before = len(items)
@@ -413,6 +462,7 @@ def build_prompt(weather_block: str, news_items: list, today: str) -> str:
 - 主体是国内要闻：中央和国务院的政策部署、重要会议、经济数据与产业政策、重大工程与科技突破、教育医疗住房等民生政策、重要立法与反腐动向。
 - 国际部分只保留重大事件：战争与冲突的局势变化、大国政坛重大变故、冲击全球市场或供应链的事件。一般性国外社会新闻、名人动态不要。
 - 科技部分只看两家公司：小米（含 Redmi、澎湃 OS、小米汽车）和苹果（含 iPhone、iPad、Mac、Apple Intelligence）。其他科技公司、泛科技趣闻、评测导购一律不要。
+- 明日方舟部分只看国服《明日方舟》：新活动上线、联动、版本更新、限定寻访、制作组通讯、系统优化公告。严禁写《明日方舟：终末地》（另一款游戏），严禁写日服、国际服、繁中服、韩服的独立公告；与明日方舟无关的其他游戏新闻一律不要。
 - 一律丢弃：社会琐事（落水/救人/走失/纠纷/车祸/暖新闻）、明星八卦、体育赛果、地方小事、标题党、营销稿。
 
 二、写法（标准新闻体，官方、客观、克制）
@@ -426,6 +476,7 @@ def build_prompt(weather_block: str, news_items: list, today: str) -> str:
 - 【国内要闻】6-8 条
 - 【国际】2-4 条（确实没有够格的重大事件，就写「今日无重大国际事件」一行）
 - 【科技·小米与苹果】2-4 条（一条都挑不出来就整节省略）
+- 【明日方舟】0-3 条（当天没有国服新公告就整节省略，绝不硬凑）
 - 每条不超过 70 字，全篇不超过 900 字。
 
 四、输出格式（纯文本，绝对不要 Markdown 符号，不要 #、*、>、反引号）
@@ -442,6 +493,9 @@ def build_prompt(weather_block: str, news_items: list, today: str) -> str:
 
 【科技·小米与苹果】
 1. ……
+
+【明日方舟】
+1. ……（写清活动/寻访名称、起止时间、是否有新干员或联动）
 
 【今天一句】
 （一句克制的提醒，20 字以内，不加感叹号）
