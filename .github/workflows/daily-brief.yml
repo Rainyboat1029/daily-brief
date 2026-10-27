@@ -2,8 +2,9 @@ name: daily-brief
 
 on:
   schedule:
-    # GitHub 的 cron 用 UTC。00:00 UTC = 当天 08:00 北京时间。
-    - cron: "0 0 * * *"
+    # GitHub 的 cron 用 UTC。00:07 UTC = 当天 08:07 北京时间。
+    # 故意避开整点：00:00 UTC 是全网 schedule 最拥堵的时刻，经常排队十几到几十分钟。
+    - cron: "7 0 * * *"
   workflow_dispatch:
     inputs:
       city:
