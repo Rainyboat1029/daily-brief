@@ -52,6 +52,7 @@ jobs:
           MAIL_TO: ${{ secrets.MAIL_TO }}
           NEWS_LIMIT: "44"
           LOOKBACK_HOURS: "30"
+          WINDOW_START: "07:00"   # 取稿窗口：昨天 07:00 → 现在
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             python3 scripts/daily_brief.py --dry-run

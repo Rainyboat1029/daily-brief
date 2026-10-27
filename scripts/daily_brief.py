@@ -252,7 +252,27 @@ def sanitize_xml(raw: bytes) -> bytes:
     return s.encode("utf-8")
 
 
-def parse_feed(xml_bytes: bytes, source: str, lookback_hours: int) -> list:
+def window_start(anchor: str = "07:00") -> datetime:
+    """简报取稿窗口的起点（北京时间）。
+
+    语义：覆盖「昨天 07:00 → 今天 07:07」。做法是取最近一个 anchor 时刻，再往前退 24 小时：
+    07:07 运行时，最近的 07:00 是今天，退 24 小时即昨天 07:00，于是窗口刚好是昨天一整天。
+    若在 anchor 之前手动运行（如 06:30），最近的锚点是昨天 07:00，窗口为前天 07:00 起。
+    若在 07:00 之后手动运行（如 20:00），窗口为昨天 07:00 起，自动变长，不会漏稿。
+    """
+    try:
+        hh, mm = [int(x) for x in (anchor or "07:00").split(":")[:2]]
+    except ValueError:
+        hh, mm = 7, 0
+    now = datetime.now(CST)
+    mark = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if mark > now:
+        mark -= timedelta(days=1)
+    return mark - timedelta(days=1)
+
+
+def parse_feed(xml_bytes: bytes, source: str, lookback_hours: int,
+               since: datetime | None = None) -> list:
     out = []
     try:
         root = ET.fromstring(sanitize_xml(xml_bytes))
@@ -260,7 +280,7 @@ def parse_feed(xml_bytes: bytes, source: str, lookback_hours: int) -> list:
         log(f"  解析失败 {source}: {e}")
         return out
 
-    cutoff = datetime.now(CST) - timedelta(hours=lookback_hours)
+    cutoff = since or (datetime.now(CST) - timedelta(hours=lookback_hours))
 
     # RSS 2.0 / RDF
     items = root.findall(".//item")
@@ -370,7 +390,8 @@ def parse_html_list(raw: bytes, source: str, base: str, pattern: str) -> list:
     return out
 
 
-def fetch_news(feeds: list, lookback_hours: int, limit: int) -> list:
+def fetch_news(feeds: list, lookback_hours: int, limit: int,
+               since: datetime | None = None) -> list:
     collected = []
     for f in feeds:
         name = f.get("name") or f.get("url", "?")
@@ -386,7 +407,7 @@ def fetch_news(feeds: list, lookback_hours: int, limit: int) -> list:
             elif kind == "hypergryph_news":
                 items = parse_hypergryph(raw, name, int(f.get("lookback_hours", 48)))
             else:
-                items = parse_feed(raw, name, lookback_hours)
+                items = parse_feed(raw, name, lookback_hours, since)
             for it in items:
                 it["topic"] = topic
                 it["weight"] = f.get("weight", 1)
@@ -675,7 +696,10 @@ def main() -> int:
     ap.add_argument("--city", default=os.environ.get("CITY", ""))
     ap.add_argument("--channel", default=(os.environ.get("PUSH_CHANNEL", "").strip() or "none"))
     ap.add_argument("--dry-run", action="store_true", help="只打印，不推送")
-    ap.add_argument("--lookback-hours", type=int, default=int(os.environ.get("LOOKBACK_HOURS", "30")))
+    ap.add_argument("--lookback-hours", type=int, default=int(os.environ.get("LOOKBACK_HOURS", "30")),
+                    help="未指定 --window-start 时，按「now - N 小时」取稿")
+    ap.add_argument("--window-start", default=os.environ.get("WINDOW_START", "07:00"),
+                    help="取稿窗口锚点（北京时间 HH:MM），窗口=昨天该时刻→现在；留空则回退到 --lookback-hours")
     ap.add_argument("--limit", type=int, default=int(os.environ.get("NEWS_LIMIT", "24")))
     ap.add_argument("--filter-keywords", default=os.environ.get("FILTER_KEYWORDS", DEFAULT_JUNK), help="逗号分隔的过滤词")
     ap.add_argument("--out", default="", help="把生成的简报写到文件")
@@ -703,8 +727,11 @@ def main() -> int:
     weather_failed = not blocks
 
     # 2. news
+    since = window_start(args.window_start) if args.window_start else None
+    if since:
+        log(f"取稿窗口：{since.strftime('%m-%d %H:%M')} → {now.strftime('%m-%d %H:%M')}（北京时间）")
     log("抓新闻")
-    news_items = fetch_news(load_feeds(), args.lookback_hours, args.limit)
+    news_items = fetch_news(load_feeds(), args.lookback_hours, args.limit, since)
     log(f"  共 {len(news_items)} 条")
     news_items, dropped = drop_junk(news_items, args.filter_keywords)
     if dropped:
