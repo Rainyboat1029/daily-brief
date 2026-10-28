@@ -1,10 +1,11 @@
 name: daily-brief
 
 on:
-  # 双保险：GitHub 自带定时（可能迟到数小时）+ 外部定时器 cron-job.org 精确调 workflow_dispatch。
-  # 谁先跑谁发信，后到的会被「今天是否已经发过」这一步跳过，所以不会一天两封。详见 README「定时触发」。
-  schedule:
-    - cron: "7 23 * * *"   # 前一天 23:07 UTC = 次日 07:07 北京时间
+  # 定时交给 cron-job.org 调 workflow_dispatch（准点），详见 README「定时触发」。
+  # GitHub 自带的 schedule 实测能用但会迟到（见过迟到 3 小时），所以默认关闭。
+  # 想恢复双保险就取消下面两行注释；重复的那次会被「今天是否已经发过」这一步跳过，不会一天两封。
+  # schedule:
+  #   - cron: "7 23 * * *"   # 前一天 23:07 UTC = 次日 07:07 北京时间
   workflow_dispatch:
     inputs:
       city:

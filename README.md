@@ -237,12 +237,12 @@ python3 scripts/daily_brief.py
 
 GitHub 自带的 `schedule` 在本仓库**能用，但会迟到**，所以用了两条腿：
 
-| 触发源 | 特点 | 角色 |
+| 触发源 | 特点 | 现状 |
 |---|---|---|
-| `schedule: "7 23 * * *"` | GitHub 排队，延迟不可控。实测 10-27 那班（23:07 UTC）拖到 02:07 UTC 才跑，迟到 3 小时 | 兜底 |
-| cron-job.org 调 `workflow_dispatch` | 准点，误差秒级 | 主力 |
+| cron-job.org 调 `workflow_dispatch` | 准点，误差秒级 | **在用** |
+| `schedule: "7 23 * * *"` | GitHub 排队，延迟不可控。实测 10-27 那班（23:07 UTC）拖到 02:07 UTC 才跑，迟到 3 小时 | 已注释，备用 |
 
-两台同时生效也不会一天发两封：workflow 第一步会查「今天（北京时间的日期）有没有成功跑过」，有就跳过。想强制重发，跑的时候勾 **force**。
+两者同时生效也不会一天发两封：workflow 第一步会查「今天（北京时间的日期）有没有成功跑过」，有就跳过。想强制重发，跑的时候勾 **force**。
 
 ### 配 cron-job.org（5 步）
 
