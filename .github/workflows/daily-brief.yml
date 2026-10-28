@@ -1,11 +1,10 @@
 name: daily-brief
 
 on:
-  # 定时触发交给外部定时器（cron-job.org 等）调用 workflow_dispatch，原因见 README「定时不触发怎么办」。
-  # 本仓库的 GitHub 自带 schedule 已实测失效：多个 cron 表达式、两天时间、0 次触发，加 5 分钟探针也不触发。
-  # 如果哪天想换回 GitHub 自带定时，把下面四行取消注释并删掉外部定时器，避免一天发两封：
-  # schedule:
-  #   - cron: "7 23 * * *"   # 前一天 23:07 UTC = 次日 07:07 北京时间
+  # 双保险：GitHub 自带定时（可能迟到数小时）+ 外部定时器 cron-job.org 精确调 workflow_dispatch。
+  # 谁先跑谁发信，后到的会被「今天是否已经发过」这一步跳过，所以不会一天两封。详见 README「定时触发」。
+  schedule:
+    - cron: "7 23 * * *"   # 前一天 23:07 UTC = 次日 07:07 北京时间
   workflow_dispatch:
     inputs:
       city:
@@ -16,9 +15,14 @@ on:
         description: "只生成不推送"
         type: boolean
         default: false
+      force:
+        description: "今天已经发过也再发一次"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  actions: read   # 读运行记录，判断今天是否已经发过
 
 concurrency:
   group: daily-brief
@@ -35,8 +39,55 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: 今天是否已经发过
+        id: guard
+        if: inputs.force != true && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CURRENT_ID: ${{ github.run_id }}
+        run: |
+          export TODAY=$(TZ=Asia/Shanghai date +%F)
+          echo "北京时间今天：$TODAY"
+          COUNT=$(curl -sS \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/actions/workflows/daily-brief.yml/runs?per_page=30" \
+            | python3 -c '
+          import json, os, sys
+          from datetime import datetime, timedelta, timezone
+
+          bj = timezone(timedelta(hours=8))
+          today = os.environ["TODAY"]
+          cur = os.environ["CURRENT_ID"]
+          n = 0
+          for run in json.load(sys.stdin).get("workflow_runs", []):
+              if str(run.get("id")) == cur:
+                  continue
+              if run.get("conclusion") != "success":
+                  continue
+              if not run.get("created_at"):
+                  continue
+              stamp = datetime.strptime(run["created_at"], "%Y-%m-%dT%H:%M:%SZ")
+              day = stamp.replace(tzinfo=timezone.utc).astimezone(bj).strftime("%F")
+              if day == today:
+                  n += 1
+          print(n)
+          ')
+          case "$COUNT" in
+            ''|*[!0-9]*) COUNT=0 ;;
+          esac
+          echo "今天已成功运行：$COUNT 次"
+          if [ "$COUNT" -gt 0 ]; then
+            echo "今天已经发过了，跳过。想重发请勾 force。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # 纯标准库，无依赖安装这一步
       - name: 生成并推送简报
+        if: steps.guard.outputs.skip != 'true'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL }}

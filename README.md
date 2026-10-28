@@ -233,20 +233,23 @@ python3 scripts/daily_brief.py
 
 模型调用失败时会退化成 `fallback_digest()`：只列原始标题、标注「未经筛选」，不会假装是整理过的新闻。
 
-## 定时触发（重要）
+## 定时触发（双保险）
 
-本仓库**不用 GitHub 自带的 `schedule`**，实测失效：
+GitHub 自带的 `schedule` 在本仓库**能用，但会迟到**，所以用了两条腿：
 
-- 换过 `0 0 * * *`、`7 0 * * *`、`7 23 * * *` 三个表达式，两天时间，`schedule` 事件 0 次；
-- 又加了一个 `*/5 * * * *` 的探针 workflow，推到仓库 35 分钟内该触发 6 次，实际 0 次；
-- 同期 GitHub 状态页显示 All Systems Operational，排除平台故障；
-- 每次手动 `workflow_dispatch` 都正常，说明 workflow 本身没问题。
+| 触发源 | 特点 | 角色 |
+|---|---|---|
+| `schedule: "7 23 * * *"` | GitHub 排队，延迟不可控。实测 10-27 那班（23:07 UTC）拖到 02:07 UTC 才跑，迟到 3 小时 | 兜底 |
+| cron-job.org 调 `workflow_dispatch` | 准点，误差秒级 | 主力 |
 
-结论：这个仓库的 GitHub 定时器不工作（新账号被限流的可能最大），修不了，只能换外部定时器。
+两台同时生效也不会一天发两封：workflow 第一步会查「今天（北京时间的日期）有没有成功跑过」，有就跳过。想强制重发，跑的时候勾 **force**。
 
-所以 `daily-brief.yml` 里只有 `workflow_dispatch`，每天的触发由 **cron-job.org** 调 GitHub API 完成：
+### 配 cron-job.org（5 步）
 
-1. 建一个 **fine-grained PAT**（https://github.com/settings/personal-access-tokens/new）：只选 `daily-brief` 这一个仓库，权限只勾 **Actions: Read and write**，有效期 90 天。
+1. 建一个 **fine-grained PAT**：https://github.com/settings/personal-access-tokens/new
+   - Repository access 选 **Only select repositories** → 只选 `daily-brief`
+   - Permissions → Repository permissions → **Actions: Read and write**，其余全 `No access`（**别给 Contents**）
+   - 有效期 90 天，生成后立刻复制（只显示一次）
 2. https://cron-job.org 注册免费账号（免费额度 50 个任务、最小间隔 1 分钟，够用）。
 3. 新建 cronjob：
    - URL：`https://api.github.com/repos/Rainyboat1029/daily-brief/actions/workflows/daily-brief.yml/dispatches`
@@ -265,16 +268,28 @@ python3 scripts/daily_brief.py
 命令行验证同样的接口：
 
 ```bash
-curl -i -X POST \\
-  -H "Authorization: Bearer $GITHUB_PAT" \\
-  -H "Accept: application/vnd.github+json" \\
-  "https://api.github.com/repos/Rainyboat1029/daily-brief/actions/workflows/daily-brief.yml/dispatches" \\
+curl -i -X POST \
+  -H "Authorization: Bearer $GITHUB_PAT" \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/Rainyboat1029/daily-brief/actions/workflows/daily-brief.yml/dispatches" \
   -d '{"ref":"main"}'
 ```
 
 返回 `HTTP/2 204` 就是成功（204 没有 body，别当成失败）。
 
-如果哪天 GitHub 的 `schedule` 又能用了，把 `daily-brief.yml` 里注释掉的那四行取消注释，同时删掉 cron-job.org 的任务，否则一天会发两封。
+### 查今天到底是谁触发的
+
+```bash
+curl -s "https://api.github.com/repos/Rainyboat1029/daily-brief/actions/runs?per_page=5" \
+  | python3 -c "import sys,json;[print(r['created_at'], r['event'], r['conclusion']) for r in json.load(sys.stdin)['workflow_runs']]"
+```
+
+`event` 是 `schedule` 说明 GitHub 自己跑的，`workflow_dispatch` 说明是 cron-job.org 或你手点的。
+
+### 已知坑
+
+- 仓库连续 60 天没有任何提交，GitHub 会自动停用 `schedule`（到 Actions 页面点 Enable 即可恢复）。cron-job.org 不受影响。
+- GitHub 的延迟可能是几分钟，也可能是几小时，没有上限承诺。所以主力一定放外部定时器。
 
 ## 花费
 
