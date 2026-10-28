@@ -62,7 +62,7 @@
       "type": "hypergryph_news",
       "url": "https://ak.hypergryph.com/news",
       "max": 4,
-      "lookback_hours": 72,
+      "lookback_hours": 168,
       "topic": "arknights",
       "exclude": [
         "终末地",
@@ -74,7 +74,8 @@
         "韩服",
         "美服"
       ],
-      "exclude_label": "终末地/非国服"
+      "exclude_label": "终末地/非国服",
+      "note": "窗口 7 天：公告常提前数天发布，简报里会用 [MM-DD] 标出发布日"
     },
     {
       "name": "游研社",
@@ -110,6 +111,21 @@
       "name": "游戏陀螺",
       "url": "https://www.youxituoluo.com/feed",
       "max": 4,
+      "topic": "arknights",
+      "only": [
+        "明日方舟"
+      ],
+      "only_label": "明日方舟",
+      "exclude": [
+        "终末地",
+        "endfield"
+      ],
+      "exclude_label": "终末地"
+    },
+    {
+      "name": "触乐",
+      "url": "https://www.chuapp.com/feed",
+      "max": 3,
       "topic": "arknights",
       "only": [
         "明日方舟"

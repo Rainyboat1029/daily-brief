@@ -211,6 +211,42 @@ python3 scripts/daily_brief.py
 
 模型调用失败时会退化成 `fallback_digest()`：只列原始标题、标注「未经筛选」，不会假装是整理过的新闻。
 
+## 定时不触发怎么办
+
+GitHub 自带的 `schedule` 不保证准点，也不保证一定触发。判断方法：打开 Actions 页面，看运行记录的 **Event** 列——
+
+- 显示 `schedule`：定时器正常，只是晚了；
+- 只有 `workflow_dispatch`：定时器**从未触发过**，说明这个仓库的 cron 根本没生效（本项目遇到过，连续两天 0 次 `schedule`）。
+
+先跑 `.github/workflows/schedule-probe.yml` 做判定：它每 5 分钟触发一次。推上去等 15 分钟，如果它的运行记录里 `Event` 全是 `workflow_dispatch`、没有 `schedule`，就可以确定是仓库级的 cron 失效，而不是写法问题。确认后把这个文件删掉。
+
+确认失效后的兜底方案：用一个外部免费定时器调 GitHub 的 `workflow_dispatch` API。
+
+1. 建一个 **fine-grained PAT**（https://github.com/settings/personal-access-tokens/new）：只选这个仓库，权限只勾 **Actions: Read and write**，有效期 90 天。
+2. 到 https://cron-job.org 注册免费账号，新建 cronjob：
+   - URL：`https://api.github.com/repos/Rainyboat1029/daily-brief/actions/workflows/daily-brief.yml/dispatches`
+   - Method：`POST`
+   - 时间：每天 `07:07`，时区 `Asia/Shanghai`
+   - Headers：
+     ```
+     Authorization: Bearer <你的 PAT>
+     Accept: application/vnd.github+json
+     Content-Type: application/json
+     ```
+   - Body：`{"ref":"main"}`
+3. 先点 cron-job.org 的 "TEST RUN"，返回 **204** 就是成功（Actions 页面会立刻多一条 `workflow_dispatch`）。
+4. 配好之后，把 `.github/workflows/daily-brief.yml` 里的 `schedule:` 那两行删掉，避免哪天 GitHub 的 cron 又活了导致一天发两封。
+
+命令行验证同样的接口（把 PAT 换成你自己的）：
+
+```bash
+curl -i -X POST \
+  -H "Authorization: Bearer $GITHUB_PAT" \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/Rainyboat1029/daily-brief/actions/workflows/daily-brief.yml/dispatches" \
+  -d '{"ref":"main"}'
+```
+
 ## 花费
 
 | 项目 | 费用 |
