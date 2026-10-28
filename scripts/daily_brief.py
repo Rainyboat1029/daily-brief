@@ -381,12 +381,14 @@ def parse_html_list(raw: bytes, source: str, base: str, pattern: str) -> list:
         if key in seen:
             continue
         seen.add(key)
+        # 政府网列表页不给发布时间，首页要闻按「抓取当日」标注（只到日期，不编时分）
         out.append({
             "source": source,
             "title": title,
             "link": urllib.parse.urljoin(base, href),
             "summary": "",
             "published": "",
+            "time": datetime.now(CST).strftime("%m-%d"),
         })
     return out
 
@@ -466,8 +468,8 @@ def call_deepseek(prompt: str, system: str, api_key: str, model: str) -> str:
 
 def build_prompt(weather_block: str, news_items: list, today: str) -> str:
     def _line(i, n):
-        # 明日方舟是 7 天窗口，必须把公告日期喂给模型，否则它无法按要求标注 [MM-DD]
-        stamp = f"[{n['time']}] " if n.get("topic") == "arknights" and n.get("time") else ""
+        # 每条候选都带发布时间，模型要照抄到成品每行开头；没有时间的条目就不给方括号
+        stamp = f"[{n['time']}] " if n.get("time") else ""
         body = f"{i + 1}. [{n['source']}] {stamp}{n['title']}"
         return body + (f"：{n['summary'][:110]}" if n.get("summary") else "")
 
@@ -486,11 +488,12 @@ def build_prompt(weather_block: str, news_items: list, today: str) -> str:
 - 主体是国内要闻：中央和国务院的政策部署、重要会议、经济数据与产业政策、重大工程与科技突破、教育医疗住房等民生政策、重要立法与反腐动向。
 - 国际部分只保留重大事件：战争与冲突的局势变化、大国政坛重大变故、冲击全球市场或供应链的事件。一般性国外社会新闻、名人动态不要。
 - 科技部分只看两家公司：小米（含 Redmi、澎湃 OS、小米汽车）和苹果（含 iPhone、iPad、Mac、Apple Intelligence）。其他科技公司、泛科技趣闻、评测导购一律不要。
-- 明日方舟部分只看国服《明日方舟》：新活动上线、联动、版本更新、限定寻访、制作组通讯、系统优化公告。严禁写《明日方舟：终末地》（另一款游戏），严禁写日服、国际服、繁中服、韩服的独立公告；与明日方舟无关的其他游戏新闻一律不要。该节内容来自最近 7 天的官方公告，多数不是当天发布的，所以**每条标题前必须用方括号标出公告日期**（如「[10-24]」），让读者知道是哪天的消息。
+- 明日方舟部分只看国服《明日方舟》：新活动上线、联动、版本更新、限定寻访、制作组通讯、系统优化公告。严禁写《明日方舟：终末地》（另一款游戏），严禁写日服、国际服、繁中服、韩服的独立公告；与明日方舟无关的其他游戏新闻一律不要。该节内容来自最近 7 天的官方公告，多数不是当天发布的，所以时间必须老老实实照抄（如「[10-24 20:30]」），不能因为「今天是 10-28」就改成今天，让读者一眼看出是哪天的消息。
 - 一律丢弃：社会琐事（落水/救人/走失/纠纷/车祸/暖新闻）、明星八卦、体育赛果、地方小事、标题党、营销稿。
 
 二、写法（标准新闻体，官方、客观、克制）
-- 每条格式：序号 + 一句标题（句号结尾），紧接一句概括，讲清发生了什么、涉及谁、关键数字或结论。
+- 每条格式：序号 + 方括号里的信源时间 + 一句标题（句号结尾）+ 一句概括，讲清发生了什么、涉及谁、关键数字或结论。示例：`1. [10-27 21:35] 央行下调存款准备金率 0.25 个百分点。此次降准...`。
+- 信源时间必须照抄候选行里的时间，一个字都不要改；候选行没有给时间的，就不要写方括号，直接接标题。
 - 全篇不许出现破折号「——」；不许用「据悉」「小编」「我们」这类口吻；不用感叹号、不用网络流行语。
 - 不评价、不煽情、不预测、不加评论性形容词。
 - 只用候选新闻里的事实，不许补充背景、不许编造数字、引语、日期；拿不准的不写。
@@ -509,17 +512,17 @@ def build_prompt(weather_block: str, news_items: list, today: str) -> str:
 （每个城市 2 句：当前温度与体感、今日温度区间与降水、要不要带伞加衣；只用上面数据，不要编造）
 
 【国内要闻】
-1. ……
-2. ……
+1. [10-27 21:35] ……
+2. [10-27 19:02] ……
 
 【国际】
-1. ……
+1. [10-27 23:10] ……
 
 【科技·小米与苹果】
-1. ……
+1. [10-28 09:15] ……
 
 【明日方舟】
-1. ……（写清活动/寻访名称、起止时间、是否有新干员或联动）
+1. [10-24 20:30] ……（写清活动/寻访名称、起止时间、是否有新干员或联动）
 
 【今天一句】
 （一句克制的提醒，20 字以内，不加感叹号）
@@ -538,7 +541,8 @@ def fallback_digest(weather_block: str, news_items: list, today: str) -> str:
     lines = ["【今日天气】", weather_block, "", "【国内要闻】"]
     for i, n in enumerate(news_items[:10], 1):
         title = n["title"].replace("——", "，").strip()
-        lines.append(f"{i}. {title}")
+        stamp = f"[{n['time']}] " if n.get("time") else ""
+        lines.append(f"{i}. {stamp}{title}")
     lines += ["", "【今天一句】", "（模型调用失败，以上为原始标题，未经筛选）"]
     return "\n".join(lines)
 

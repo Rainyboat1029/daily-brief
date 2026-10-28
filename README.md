@@ -1,7 +1,7 @@
 # daily-brief —— 每天定时把「天气 + 新闻摘要」推到手机
 
 纯标准库实现，不需要服务器、不需要一直开着的电脑。跑在 GitHub Actions 上，
-每天 UTC 23:07（北京时间次日 07:07）自动执行，取稿窗口固定为**昨天 07:00 → 今天 07:07**：
+每天北京时间 07:07 执行（由 cron-job.org 触发，不用 GitHub 自带定时，原因见下面「定时触发」），取稿窗口固定为**昨天 07:00 → 今天 07:07**：
 
 ```
 Open-Meteo 查天气（免费、免 key）
@@ -201,6 +201,28 @@ python3 scripts/daily_brief.py
 
 简报里的呈现规则：`【明日方舟】0-3 条`，要求写清活动/寻访名称、起止时间、是否有新干员或联动；当天没有国服新公告就**整节省略**，不许拿旧闻凑数。
 
+## 每条新闻都带信源时间
+
+简报里每条都长这样，方括号里是**该条新闻自己的发布时间**，不是生成简报的时间：
+
+```
+【国内要闻】
+1. [10-27 21:35] 央行下调存款准备金率 0.25 个百分点。此次降准...
+2. [10-28] "我将无我，不负人民"的时代答卷。...
+【明日方舟】
+1. [10-24 20:30] [限定寻访·庆典]【将雪投火】限时寻访即将开启。...
+```
+
+时间的来源：
+
+| 源 | 时间来源 | 精度 |
+|---|---|---|
+| 中新网 / IT之家 / 游研社 / 机核 / 游戏陀螺 / 触乐 | RSS 的 `pubDate` | 到分钟 |
+| 鹰角官网 | 公告内嵌 JSON 的 `displayTime` | 到分钟 |
+| 中国政府网 | 列表页不给时间，用**抓取当日** | 只到日期 |
+
+实现上是在候选行里就带上 `[MM-DD HH:MM]`，提示词要求模型「照抄，一个字都不要改」，并且明确写了「候选行没给时间就不要写方括号」——这样它既不会编时间，也不会把方舟三天前的公告写成今天。
+
 ## 选稿与文风（提示词）
 
 约束都在 `build_prompt()` 里，改风格只需要改这一段：
@@ -211,19 +233,22 @@ python3 scripts/daily_brief.py
 
 模型调用失败时会退化成 `fallback_digest()`：只列原始标题、标注「未经筛选」，不会假装是整理过的新闻。
 
-## 定时不触发怎么办
+## 定时触发（重要）
 
-GitHub 自带的 `schedule` 不保证准点，也不保证一定触发。判断方法：打开 Actions 页面，看运行记录的 **Event** 列——
+本仓库**不用 GitHub 自带的 `schedule`**，实测失效：
 
-- 显示 `schedule`：定时器正常，只是晚了；
-- 只有 `workflow_dispatch`：定时器**从未触发过**，说明这个仓库的 cron 根本没生效（本项目遇到过，连续两天 0 次 `schedule`）。
+- 换过 `0 0 * * *`、`7 0 * * *`、`7 23 * * *` 三个表达式，两天时间，`schedule` 事件 0 次；
+- 又加了一个 `*/5 * * * *` 的探针 workflow，推到仓库 35 分钟内该触发 6 次，实际 0 次；
+- 同期 GitHub 状态页显示 All Systems Operational，排除平台故障；
+- 每次手动 `workflow_dispatch` 都正常，说明 workflow 本身没问题。
 
-先跑 `.github/workflows/schedule-probe.yml` 做判定：它每 5 分钟触发一次。推上去等 15 分钟，如果它的运行记录里 `Event` 全是 `workflow_dispatch`、没有 `schedule`，就可以确定是仓库级的 cron 失效，而不是写法问题。确认后把这个文件删掉。
+结论：这个仓库的 GitHub 定时器不工作（新账号被限流的可能最大），修不了，只能换外部定时器。
 
-确认失效后的兜底方案：用一个外部免费定时器调 GitHub 的 `workflow_dispatch` API。
+所以 `daily-brief.yml` 里只有 `workflow_dispatch`，每天的触发由 **cron-job.org** 调 GitHub API 完成：
 
-1. 建一个 **fine-grained PAT**（https://github.com/settings/personal-access-tokens/new）：只选这个仓库，权限只勾 **Actions: Read and write**，有效期 90 天。
-2. 到 https://cron-job.org 注册免费账号，新建 cronjob：
+1. 建一个 **fine-grained PAT**（https://github.com/settings/personal-access-tokens/new）：只选 `daily-brief` 这一个仓库，权限只勾 **Actions: Read and write**，有效期 90 天。
+2. https://cron-job.org 注册免费账号（免费额度 50 个任务、最小间隔 1 分钟，够用）。
+3. 新建 cronjob：
    - URL：`https://api.github.com/repos/Rainyboat1029/daily-brief/actions/workflows/daily-brief.yml/dispatches`
    - Method：`POST`
    - 时间：每天 `07:07`，时区 `Asia/Shanghai`
@@ -234,18 +259,22 @@ GitHub 自带的 `schedule` 不保证准点，也不保证一定触发。判断�
      Content-Type: application/json
      ```
    - Body：`{"ref":"main"}`
-3. 先点 cron-job.org 的 "TEST RUN"，返回 **204** 就是成功（Actions 页面会立刻多一条 `workflow_dispatch`）。
-4. 配好之后，把 `.github/workflows/daily-brief.yml` 里的 `schedule:` 那两行删掉，避免哪天 GitHub 的 cron 又活了导致一天发两封。
+4. 点 "TEST RUN"，返回 **204** 即成功，Actions 页面会立刻多一条 `workflow_dispatch` 记录。
+5. 打开 cron-job.org 的失败通知（Execution failure），它挂了你才会知道。
 
-命令行验证同样的接口（把 PAT 换成你自己的）：
+命令行验证同样的接口：
 
 ```bash
-curl -i -X POST \
-  -H "Authorization: Bearer $GITHUB_PAT" \
-  -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/Rainyboat1029/daily-brief/actions/workflows/daily-brief.yml/dispatches" \
+curl -i -X POST \\
+  -H "Authorization: Bearer $GITHUB_PAT" \\
+  -H "Accept: application/vnd.github+json" \\
+  "https://api.github.com/repos/Rainyboat1029/daily-brief/actions/workflows/daily-brief.yml/dispatches" \\
   -d '{"ref":"main"}'
 ```
+
+返回 `HTTP/2 204` 就是成功（204 没有 body，别当成失败）。
+
+如果哪天 GitHub 的 `schedule` 又能用了，把 `daily-brief.yml` 里注释掉的那四行取消注释，同时删掉 cron-job.org 的任务，否则一天会发两封。
 
 ## 花费
 
