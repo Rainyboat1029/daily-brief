@@ -346,6 +346,7 @@ def parse_hypergryph(raw: bytes, source: str, lookback_hours: int = 48) -> list:
             "link": "https://ak.hypergryph.com/news",
             "summary": brief,
             "published": dt.strftime("%Y-%m-%d %H:%M"),
+            "time": dt.strftime("%m-%d %H:%M"),
             "_dt": dt,
         })
     out.sort(key=lambda x: x["_dt"], reverse=True)
@@ -464,11 +465,13 @@ def call_deepseek(prompt: str, system: str, api_key: str, model: str) -> str:
 
 
 def build_prompt(weather_block: str, news_items: list, today: str) -> str:
-    news_block = "\n".join(
-        f"{i + 1}. [{n['source']}] {n['title']}"
-        + (f"：{n['summary'][:110]}" if n.get("summary") else "")
-        for i, n in enumerate(news_items)
-    )
+    def _line(i, n):
+        # 明日方舟是 7 天窗口，必须把公告日期喂给模型，否则它无法按要求标注 [MM-DD]
+        stamp = f"[{n['time']}] " if n.get("topic") == "arknights" and n.get("time") else ""
+        body = f"{i + 1}. [{n['source']}] {stamp}{n['title']}"
+        return body + (f"：{n['summary'][:110]}" if n.get("summary") else "")
+
+    news_block = "\n".join(_line(i, n) for i, n in enumerate(news_items))
     return f"""今天是 {today}。
 
 【天气数据】
